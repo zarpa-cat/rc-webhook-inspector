@@ -1,0 +1,37 @@
+[project]
+name = "rc-webhook-inspector"
+version = "0.1.0"
+description = "Dev tooling for testing RevenueCat webhook integrations"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "httpx>=0.28.0",
+    "typer>=0.15.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+rcwi = "rc_webhook_inspector.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.10.4,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.9.0",
+    "pytest-asyncio>=0.25.0",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
