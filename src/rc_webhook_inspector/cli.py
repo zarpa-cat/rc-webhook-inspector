@@ -11,8 +11,11 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from rc_webhook_inspector.differ import PayloadDiffer
 from rc_webhook_inspector.events import EventSynthesizer
 from rc_webhook_inspector.inspector import WebhookInspector
+from rc_webhook_inspector.replayer import WebhookReplayer
+from rc_webhook_inspector.signer import sign_payload, verify_payload
 from rc_webhook_inspector.store import WebhookStore
 
 app = typer.Typer(name="rcwi", help="RevenueCat Webhook Inspector")
@@ -161,6 +164,115 @@ def inspect(
     payload = _read_payload(source)
     summary = WebhookInspector.summarize(payload)
     console.print_json(json.dumps(summary))
+
+
+@app.command()
+def replay(
+    event_id: Annotated[str, typer.Argument(help="Event ID to replay")],
+    endpoint: Annotated[str, typer.Argument(help="Target URL to POST to")],
+    auth_key: Annotated[
+        str | None,  # noqa: UP007
+        typer.Option("--auth-key", help="Sign with HMAC key (attaches RC-Webhook-Signature)"),
+    ] = None,
+    db: Annotated[str, typer.Option("--db", help="Database path")] = DEFAULT_DB,
+) -> None:
+    """Replay a stored event to any HTTP endpoint."""
+    store = WebhookStore(db)
+    event = store.get(event_id)
+    store.close()
+
+    if event is None:
+        console.print(f"[red]Error:[/red] Event {event_id!r} not found")
+        raise typer.Exit(code=1)
+
+    replayer = WebhookReplayer()
+    result = replayer.replay(
+        event_id=event_id,
+        payload=event["payload"],
+        endpoint=endpoint,
+        auth_key=auth_key,
+    )
+
+    status_style = "green" if result.success else "red"
+    console.print(
+        f"[{status_style}]HTTP {result.status_code}[/{status_style}] "
+        f"→ {endpoint} ({result.elapsed_ms}ms)"
+    )
+
+    if result.error:
+        console.print(f"[red]Error:[/red] {result.error}")
+
+    if result.response_body:
+        console.print("[dim]Response:[/dim]")
+        try:
+            console.print_json(result.response_body)
+        except Exception:  # noqa: BLE001
+            console.print(result.response_body)
+
+    if not result.success:
+        raise typer.Exit(code=1)
+
+
+@app.command()
+def diff(
+    left_source: Annotated[str, typer.Argument(help="Left payload: file path or - for stdin")],
+    right_source: Annotated[str, typer.Argument(help="Right payload: file path")],
+) -> None:
+    """Compare two webhook payloads and show field differences."""
+    left = _read_payload(left_source)
+    right = _read_payload(right_source)
+
+    result = PayloadDiffer.diff(left, right)
+
+    if not result.same_type:
+        console.print(
+            f"[yellow]⚠ Type mismatch:[/yellow] {result.left_type!r} vs {result.right_type!r}"
+        )
+    else:
+        console.print(f"[dim]Comparing two [{result.left_type}] payloads[/dim]")
+
+    if not result.has_diffs:
+        console.print("[green]✓ Identical[/green]")
+        return
+
+    table = Table(title="Payload Diff")
+    table.add_column("Field", style="cyan")
+    table.add_column("Kind", style="yellow")
+    table.add_column("Left", style="red")
+    table.add_column("Right", style="green")
+
+    for d in result.diffs:
+        table.add_row(d.path, d.kind, repr(d.left), repr(d.right))
+
+    console.print(table)
+    nc, na, nr = len(result.changed), len(result.added), len(result.removed)
+    console.print(f"[dim]{nc} changed · {na} added · {nr} removed[/dim]")
+
+
+@app.command()
+def sign(
+    key: Annotated[str, typer.Argument(help="HMAC key to sign with")],
+    source: Annotated[
+        str | None, typer.Argument(help="JSON file path or - for stdin")  # noqa: UP007
+    ] = None,
+    verify: Annotated[
+        str | None,  # noqa: UP007
+        typer.Option("--verify", help="Verify this signature instead of printing a new one"),
+    ] = None,
+) -> None:
+    """Compute or verify the HMAC-SHA256 signature for a webhook payload."""
+    payload = _read_payload(source)
+
+    if verify is not None:
+        ok = verify_payload(payload, key, verify)
+        if ok:
+            console.print("[green]✓ Signature valid[/green]")
+        else:
+            console.print("[red]✗ Signature invalid[/red]")
+            raise typer.Exit(code=1)
+    else:
+        sig = sign_payload(payload, key)
+        console.print(sig)
 
 
 @app.command()
